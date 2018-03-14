@@ -16,8 +16,7 @@ contract('Remittance', function (accounts) {
 
     const password_one = "p455w0rd123";
     const password_two = "t35tP455";
-    const hashed_password_one = Web3Utils.soliditySha3(password_one);
-    const hashed_password_two = Web3Utils.soliditySha3(password_two);
+    const puzzle = Web3Utils.soliditySha3(password_one, password_two);
 
     beforeEach('setup contract for each test', function () {
         return RemittanceContract.new({ from: contractCreator }).then(function (instance) {
@@ -27,57 +26,39 @@ contract('Remittance', function (accounts) {
     });
 
     it("should allow creation of a fund transfer", async () => {
-        var txObj = await remittanceContract.createFundTransfer(account_fund_recipient, hashed_password_one, hashed_password_two,
+        var txObj = await remittanceContract.createFundTransfer(account_fund_recipient, puzzle,
             { from: account_fund_creator, value: fund_transfer_amount });
-        var expectedFundTransferId = 1;
         // Access the  mapping (uint => FundTransfer) public fundTransfers directly and check it has been stored
-        var fundTransferMappingValue = await remittanceContract.fundTransfers(expectedFundTransferId);
-        assertFundTransferCreated(expectedFundTransferId, txObj, fundTransferMappingValue, fund_transfer_amount);
+        var fundTransferMappingValue = await remittanceContract.fundTransfers(puzzle);
+        assertFundTransferCreated(txObj, fundTransferMappingValue, fund_transfer_amount);
     });
 
-    function assertFundTransferCreated(expectedFundTransferId, txObj, fundTransferMappingValue, fundTransferAmount) {
+    function assertFundTransferCreated(txObj, fundTransferMappingValue, fundTransferAmount) {
         var createFundEvent = txObj.logs[0];
         // Assert fundTranssferEvent details
         assert.strictEqual(txObj.logs.length, 1);
-        assert.strictEqual(Number(createFundEvent.args.fundTransferId), expectedFundTransferId, "Fund Transfer ID invalid");
         assert.strictEqual(createFundEvent.args.fundRecipient, account_fund_recipient);
+        assert.strictEqual(createFundEvent.args.fundCreator, account_fund_creator);
         assert.strictEqual(createFundEvent.args.amount.toString[10], fundTransferAmount.toString[10]);
 
         // Assert a FundTransfer is inserted into the fundTransfers mapping
-        assert.strictEqual(Number(fundTransferMappingValue[0]), expectedFundTransferId, "Fund Transfer ID invalid");
-        assert.strictEqual(fundTransferMappingValue[1], account_fund_recipient, "Fund Transfer recipient invalid");
-        var fundTransferPassHash = Web3Utils.soliditySha3(hashed_password_one, hashed_password_two);
-        assert.strictEqual(fundTransferMappingValue[2], fundTransferPassHash, "Fund Transfer passwords invalid");
-        assert.strictEqual(fundTransferMappingValue[3].toString[10], fundTransferAmount.toString[10], "Fund Transfer amount invalid");
+        assert.strictEqual(fundTransferMappingValue[0], account_fund_recipient, "Fund Transfer recipient invalid");
+        assert.strictEqual(fundTransferMappingValue[1].toString[10], fundTransferAmount.toString[10], "Fund Transfer amount invalid");
     }
-
-    it("should increment Fund Transfer ID on subsequent creations of FundTransfers", async () => {
-        var txObj1 = await remittanceContract.createFundTransfer(account_fund_recipient, hashed_password_one, hashed_password_two,
-            { from: account_fund_creator, value: fund_transfer_amount });
-        // Access the  mapping (uint => FundTransfer) public fundTransfers directly and check it has been stored
-        var fundTransferMappingValue1 = await remittanceContract.fundTransfers(1);
-        assertFundTransferCreated(1, txObj1, fundTransferMappingValue1, fund_transfer_amount);
-
-        var txObj2 = await remittanceContract.createFundTransfer(account_fund_recipient, hashed_password_one, hashed_password_two,
-            { from: account_fund_creator, value: fund_transfer_amount });
-        var fundTransferMappingValue2 = await remittanceContract.fundTransfers(2);
-        assertFundTransferCreated(2, txObj2, fundTransferMappingValue2, fund_transfer_amount);
-    });
 
     it("should allow fund recipient to withdraw funds with correct passwords", async () => {
         const fund_recipient_initial_balance = await web3.eth.getBalancePromise(account_fund_recipient);
 
         // perhaps wait on mined
-        await remittanceContract.createFundTransfer(account_fund_recipient, hashed_password_one, hashed_password_two,
+        await remittanceContract.createFundTransfer(account_fund_recipient, puzzle,
             { from: account_fund_creator, value: fund_transfer_amount });
 
         // Try to withdraw the plain passwords
-        var txObj = await remittanceContract.widthdrawFund(1, password_one, password_two, { from: account_fund_recipient });
+        var txObj = await remittanceContract.widthdrawFund(password_one, password_two,{ from: account_fund_recipient });
 
         // Check the withdrawal event is emitted
         var fundWithdrawalEvent = txObj.logs[0];
         assert.strictEqual(txObj.logs.length, 1);
-        assert.strictEqual(Number(fundWithdrawalEvent.args.fundTransferId), 1, "Fund Transfer ID invalid");
         assert.strictEqual(fundWithdrawalEvent.args.fundRecipient, account_fund_recipient);
         assert.strictEqual(fundWithdrawalEvent.args.amount.toString[10], fund_transfer_amount.toString[10]);
 
@@ -106,32 +87,32 @@ contract('Remittance', function (accounts) {
     }
 
     it("should not allow fund recipient to withdraw funds with incorrect passwords", async () => {
-        await remittanceContract.createFundTransfer(account_fund_recipient, hashed_password_one, hashed_password_two,
+        await remittanceContract.createFundTransfer(account_fund_recipient, puzzle,
             { from: account_fund_creator, value: fund_transfer_amount });
 
         // Try to withdraw with incorrect passwords
         return expectedExceptionPromise(function () {
-            return remittanceContract.widthdrawFund(1, "incorrect1", "incorrect2", { from: account_fund_recipient });
+            return remittanceContract.widthdrawFund("incorrect1", "incorrect2", { from: account_fund_recipient });
         });
     });
 
     it("should not allow fund recipient to withdraw funds with one correct and one incorrect password", async () => {
-        await remittanceContract.createFundTransfer(account_fund_recipient, hashed_password_one, hashed_password_two,
+        await remittanceContract.createFundTransfer(account_fund_recipient, puzzle,
             { from: account_fund_creator, value: fund_transfer_amount });
 
         // Try to withdraw with one incorrect password
         return expectedExceptionPromise(function () {
-            return remittanceContract.widthdrawFund(1, password_one, "incorrect2", { from: account_fund_recipient });
+            return remittanceContract.widthdrawFund(password_one, "incorrect2", { from: account_fund_recipient });
         });
     });
 
     it("should not allow any one but the designated fund recipient to withdraw funds", async () => {
-        await remittanceContract.createFundTransfer(account_fund_recipient, hashed_password_one, hashed_password_two,
+        await remittanceContract.createFundTransfer(account_fund_recipient, puzzle,
             { from: account_fund_creator, value: fund_transfer_amount });
 
         // Try to withdraw from the an account that is not the designated fund recipient
         return expectedExceptionPromise(function () {
-            return remittanceContract.widthdrawFund(1, password_one, password_two, { from: account_fund_creator});
+            return remittanceContract.widthdrawFund(password_one, password_two, { from: account_fund_creator});
         });
     });
 });
