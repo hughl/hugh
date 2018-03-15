@@ -13,10 +13,23 @@ contract('Remittance', function (accounts) {
     const account_fund_creator = accounts[0];
     const account_fund_recipient = accounts[1];
     const fund_transfer_amount = web3.toWei(2, "ether");;
-
     const password_one = "p455w0rd123";
-    const password_two = "t35tP455";
-    const puzzle = Web3Utils.soliditySha3(password_one, password_two);
+    const expiry_in_days = 2;
+
+    const setBlockchainTime = function (time) {
+        return new Promise((resolve, reject) => {
+          web3.currentProvider.sendAsync({
+            jsonrpc: "2.0",
+            method: "evm_increaseTime",
+            params: [time], // 86400 is num seconds in day
+            id: new Date().getTime()
+          }, (err, result) => {
+            if(err){ return reject(err) }
+            return resolve(result)
+          });
+        })
+      }
+
 
     beforeEach('setup contract for each test', function () {
         return RemittanceContract.new({ from: contractCreator }).then(function (instance) {
@@ -26,35 +39,32 @@ contract('Remittance', function (accounts) {
     });
 
     it("should allow creation of a fund transfer", async () => {
-        var txObj = await remittanceContract.createFundTransfer(account_fund_recipient, puzzle,
-            { from: account_fund_creator, value: fund_transfer_amount });
-        // Access the  mapping (uint => FundTransfer) public fundTransfers directly and check it has been stored
-        var fundTransferMappingValue = await remittanceContract.fundTransfers(puzzle);
-        assertFundTransferCreated(txObj, fundTransferMappingValue, fund_transfer_amount);
+        var txObj = await createFundTransfer();
+        assertFundTransferCreated(txObj, fund_transfer_amount, expiry_in_days);
     });
 
-    function assertFundTransferCreated(txObj, fundTransferMappingValue, fundTransferAmount) {
+    async function createFundTransfer() {
+        return await remittanceContract.createFundTransfer(account_fund_recipient, password_one, expiry_in_days,
+            { from: account_fund_creator, value: fund_transfer_amount });
+    }
+
+    function assertFundTransferCreated(txObj, fundTransferAmount, expiryInDays) {
         var createFundEvent = txObj.logs[0];
         // Assert fundTranssferEvent details
         assert.strictEqual(txObj.logs.length, 1);
         assert.strictEqual(createFundEvent.args.fundRecipient, account_fund_recipient);
         assert.strictEqual(createFundEvent.args.fundCreator, account_fund_creator);
         assert.strictEqual(createFundEvent.args.amount.toString[10], fundTransferAmount.toString[10]);
-
-        // Assert a FundTransfer is inserted into the fundTransfers mapping
-        assert.strictEqual(fundTransferMappingValue[0], account_fund_recipient, "Fund Transfer recipient invalid");
-        assert.strictEqual(fundTransferMappingValue[1].toString[10], fundTransferAmount.toString[10], "Fund Transfer amount invalid");
+        assert.strictEqual(Number(createFundEvent.args.expiryInDays), 2);
     }
 
     it("should allow fund recipient to withdraw funds with correct passwords", async () => {
         const fund_recipient_initial_balance = await web3.eth.getBalancePromise(account_fund_recipient);
 
-        // perhaps wait on mined
-        await remittanceContract.createFundTransfer(account_fund_recipient, puzzle,
-            { from: account_fund_creator, value: fund_transfer_amount });
+        createFundTransfer();
 
         // Try to withdraw the plain passwords
-        var txObj = await remittanceContract.widthdrawFund(password_one, password_two,{ from: account_fund_recipient });
+        var txObj = await remittanceContract.widthdrawFund(password_one, { from: account_fund_recipient });
 
         // Check the withdrawal event is emitted
         var fundWithdrawalEvent = txObj.logs[0];
@@ -87,32 +97,55 @@ contract('Remittance', function (accounts) {
     }
 
     it("should not allow fund recipient to withdraw funds with incorrect passwords", async () => {
-        await remittanceContract.createFundTransfer(account_fund_recipient, puzzle,
-            { from: account_fund_creator, value: fund_transfer_amount });
+        createFundTransfer();
 
         // Try to withdraw with incorrect passwords
         return expectedExceptionPromise(function () {
-            return remittanceContract.widthdrawFund("incorrect1", "incorrect2", { from: account_fund_recipient });
-        });
-    });
-
-    it("should not allow fund recipient to withdraw funds with one correct and one incorrect password", async () => {
-        await remittanceContract.createFundTransfer(account_fund_recipient, puzzle,
-            { from: account_fund_creator, value: fund_transfer_amount });
-
-        // Try to withdraw with one incorrect password
-        return expectedExceptionPromise(function () {
-            return remittanceContract.widthdrawFund(password_one, "incorrect2", { from: account_fund_recipient });
+            return remittanceContract.widthdrawFund("incorrect1", { from: account_fund_recipient });
         });
     });
 
     it("should not allow any one but the designated fund recipient to withdraw funds", async () => {
-        await remittanceContract.createFundTransfer(account_fund_recipient, puzzle,
-            { from: account_fund_creator, value: fund_transfer_amount });
+        createFundTransfer();
 
         // Try to withdraw from the an account that is not the designated fund recipient
         return expectedExceptionPromise(function () {
-            return remittanceContract.widthdrawFund(password_one, password_two, { from: account_fund_creator});
+            return remittanceContract.widthdrawFund(password_one, { from: account_fund_creator});
+        });
+    });
+
+    it("should allow the fund creator to withdraw the funds after the expiry time", async () => {
+        await  createFundTransfer();
+        
+        var threeDaysInSeconds = 86400 * 3;
+        await setBlockchainTime(threeDaysInSeconds) ;
+        
+        var txObj = await remittanceContract.reclaimFunds(account_fund_recipient, password_one,{from: account_fund_creator});        
+        var fundReclaimedEvent = txObj.logs[0];
+
+        assert.strictEqual(txObj.logs.length, 1);
+        assert.strictEqual(fundReclaimedEvent.args.fundReclaimer, account_fund_creator);
+        assert.strictEqual(fundReclaimedEvent.args.amount.toString[10], fund_transfer_amount.toString[10]);
+    });
+
+    it("should not allow the fund creator to reclaim the funds before the expiry time", async () => {
+        await  createFundTransfer();
+        
+        // Try to reclaim funds before expiry
+        return expectedExceptionPromise(function () {
+            return remittanceContract.reclaimFunds(account_fund_recipient, password_one,{from: account_fund_creator});        
+        });
+    });
+
+    it("should not allow someone other than the fund creator to reclaim the funds after the expiry time", async () => {
+        await  createFundTransfer();
+        
+        var threeDaysInSeconds = 86400 * 3;
+        await setBlockchainTime(threeDaysInSeconds) ;
+
+        // Try to reclaim funds before expiry
+        return expectedExceptionPromise(function () {
+            return remittanceContract.reclaimFunds(account_fund_recipient, password_one,{from: account_fund_recipient});        
         });
     });
 });

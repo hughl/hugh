@@ -2,13 +2,16 @@ pragma solidity ^0.4.17;
 
 contract Remittance {
     
-    event LogFundTransferCreated(address fundCreator, address indexed fundRecipient, uint amount);
+    event LogFundTransferCreated(address indexed fundCreator, address indexed fundRecipient, uint amount, uint createAt, uint expiryInDays);
     event LogFundWithdrawal(address indexed fundRecipient, uint amount);
+    event LogFundReclaimed(address indexed fundReclaimer, uint amount);
 
     // A struct that will contain the details of a FundTransfer
     struct FundTransfer {
-        address fundRecipient;
+        address fundCreator;
         uint amount;
+        uint createdAt;
+        uint expiry;
     }
 
     // Store of all FundTransfers created
@@ -18,34 +21,54 @@ contract Remittance {
       * Creates and stores a fund transfer with a unique ID
       *    
       * @param fundRecipient The account that will be the recipient of the funds in this transfer
-      * @param puzzle The puzzle that needs to ba solved by the fundRecipient to withdraw the funds
+      * @param password The password
       */
-    function createFundTransfer(address fundRecipient, bytes32 puzzle) public payable {
+    function createFundTransfer(address fundRecipient, string password, uint expiryInDays) public payable {
         require(msg.value > 0);
         
-        fundTransfers[puzzle] = FundTransfer(fundRecipient, msg.value);
-        LogFundTransferCreated(msg.sender, fundRecipient, msg.value);
+        bytes32 fundTransferKey = keccak256(fundRecipient, password);
+        fundTransfers[fundTransferKey] = FundTransfer({
+                fundCreator: msg.sender,
+                amount: msg.value,
+                createdAt: now,
+                expiry : expiryInDays
+            });
+        LogFundTransferCreated(msg.sender, fundRecipient, msg.value, now, expiryInDays);
     }
     
      /**
-      * Allows the recipient to withdraw the FundTransfer funds if they are the designated recipient of the FundTrasnfer with
-      * the provided ID, and both plain text passes match the originally provided passwords when keccak256 hashed.
+      * Allows the recipient to withdraw the FundTransfer funds if they are the designated recipient of the FundTrasnfer
+      * with the correct password
       *    
-      * @param passwordOne The password to the first part of the puzzle
-      * @param passwordTwo The password to the second part of the puzzle
+      * @param password The passsword
       */
-    function widthdrawFund(string passwordOne, string passwordTwo) public returns (bool) {
-        FundTransfer storage fundTransfer = fundTransfers[keccak256(passwordOne, passwordTwo)];
+    function widthdrawFund(string password) public returns (bool) {
+        bytes32 fundTransferKey = keccak256(msg.sender, password);
+        FundTransfer storage fundTransfer = fundTransfers[fundTransferKey];
         uint amount = fundTransfer.amount;
         require(amount > 0);
-
-        // Only the stored fundRecipient should be allowed to release funds
-        require(fundTransfer.fundRecipient == msg.sender);
         
+        // Only the stored fundRecipient should be allowed to release funds
         fundTransfer.amount = 0;
-        LogFundWithdrawal(fundTransfer.fundRecipient, amount);
+        LogFundWithdrawal(msg.sender, amount);
         msg.sender.transfer(amount);
         
+        return true;
+    }
+
+    function reclaimFunds(address fundRecipient, string password)  public returns (bool) {
+        bytes32 fundTransferKey = keccak256(fundRecipient, password);
+        FundTransfer storage fundTransfer = fundTransfers[fundTransferKey];
+        uint amount = fundTransfer.amount;
+
+        // check that the fundTansfer has expired
+        require(now >= (fundTransfer.createdAt + fundTransfer.expiry * 1 days));
+        require(msg.sender == fundTransfer.fundCreator);
+       
+        fundTransfer.amount = 0;
+        LogFundReclaimed(msg.sender, amount);
+        msg.sender.transfer(amount);
+
         return true;
     }
 }
