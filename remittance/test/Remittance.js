@@ -14,6 +14,7 @@ contract('Remittance', function (accounts) {
     const account_fund_recipient = accounts[1];
     const fund_transfer_amount = web3.toWei(2, "ether");;
     const password_one = "p455w0rd123";
+    var puzzle;
     const expiry_in_days = 2;
 
     const setBlockchainTime = function (time) {
@@ -44,7 +45,8 @@ contract('Remittance', function (accounts) {
     });
 
     async function createFundTransfer() {
-        return await remittanceContract.createFundTransfer(account_fund_recipient, password_one, expiry_in_days,
+        puzzle = await remittanceContract.createPuzzle(account_fund_recipient, password_one);
+        return await remittanceContract.createFundTransfer(puzzle, expiry_in_days,
             { from: account_fund_creator, value: fund_transfer_amount });
     }
 
@@ -52,16 +54,15 @@ contract('Remittance', function (accounts) {
         var createFundEvent = txObj.logs[0];
         // Assert fundTranssferEvent details
         assert.strictEqual(txObj.logs.length, 1);
-        assert.strictEqual(createFundEvent.args.fundRecipient, account_fund_recipient);
         assert.strictEqual(createFundEvent.args.fundCreator, account_fund_creator);
         assert.strictEqual(createFundEvent.args.amount.toString[10], fundTransferAmount.toString[10]);
         assert.strictEqual(Number(createFundEvent.args.expiryInDays), 2);
     }
 
-    it("should allow fund recipient to withdraw funds with correct passwords", async () => {
-        const fund_recipient_initial_balance = await web3.eth.getBalancePromise(account_fund_recipient);
+    it("should allow fund recipient to withdraw funds with correct password", async () => {
+        await createFundTransfer();
 
-        createFundTransfer();
+        const fund_recipient_initial_balance = await web3.eth.getBalancePromise(account_fund_recipient);
 
         // Try to withdraw the plain passwords
         var txObj = await remittanceContract.widthdrawFund(password_one, { from: account_fund_recipient });
