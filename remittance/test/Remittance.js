@@ -46,7 +46,7 @@ contract('Remittance', function (accounts) {
 
     async function createFundTransfer() {
         puzzle = await remittanceContract.createPuzzle(account_fund_recipient, password_one);
-        return await remittanceContract.createFundTransfer(puzzle, expiry_in_days,
+        return await remittanceContract.createFundTransfer(puzzle, account_fund_recipient, expiry_in_days,
             { from: account_fund_creator, value: fund_transfer_amount });
     }
 
@@ -148,5 +148,14 @@ contract('Remittance', function (accounts) {
         return expectedExceptionPromise(function () {
             return remittanceContract.reclaimFunds(account_fund_recipient, password_one,{from: account_fund_recipient});        
         });
+    });
+
+    it("should not allow creation of a fund transfer without a unique puzzle", async () => {
+        var txObj = await createFundTransfer();
+        assertFundTransferCreated(txObj, fund_transfer_amount, expiry_in_days);
+         // Try to reclaim funds before expiry
+         return expectedExceptionPromise(function () {
+            return createFundTransfer();
+        }); 
     });
 });

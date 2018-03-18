@@ -2,7 +2,7 @@ pragma solidity ^0.4.17;
 
 contract Remittance {
     
-    event LogFundTransferCreated(address indexed fundCreator, uint amount, uint createAt, uint expiryInDays);
+    event LogFundTransferCreated(address indexed fundCreator, address indexed fundRecipient, uint amount, uint createAt, uint expiryInDays);
     event LogFundWithdrawal(address indexed fundRecipient, uint amount);
     event LogFundReclaimed(address indexed fundReclaimer, uint amount);
 
@@ -27,15 +27,17 @@ contract Remittance {
       * @param puzzle The puzzle that needs to be solved to withdraw
       * @param expiryInDays the expiry date of the transfer
       */
-    function createFundTransfer(bytes32 puzzle, uint expiryInDays) public payable returns(bool) {
+    function createFundTransfer(bytes32 puzzle, address fundRecipient, uint expiryInDays) public payable returns(bool) {
         require(msg.value > 0);
-        fundTransfers[puzzle] = FundTransfer({
-                fundCreator: msg.sender,
-                amount: msg.value,
-                createdAt: now,
-                expiry : expiryInDays
-            });
-        LogFundTransferCreated(msg.sender, fundTransfers[puzzle].amount, now, expiryInDays);
+
+        FundTransfer storage fundTransfer = fundTransfers[puzzle];
+        require(fundTransfer.fundCreator == 0);
+        fundTransfer.fundCreator = msg.sender;
+        fundTransfer.amount = msg.value;
+        fundTransfer.createdAt = now;
+        fundTransfer.expiry = expiryInDays;
+
+        LogFundTransferCreated(msg.sender, fundRecipient, fundTransfers[puzzle].amount, now, expiryInDays);
         return true;
     }
     
