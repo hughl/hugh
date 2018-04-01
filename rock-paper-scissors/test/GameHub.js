@@ -7,6 +7,20 @@ const Web3Utils = require('web3-utils');
 const expectedExceptionPromise = require("./expected_exception_testRPC_and_geth.js");
 web3.eth.getTransactionReceiptMined = require("./getTransactionReceiptMined.js");
 
+const setBlockchainTime = function (time) {
+    return new Promise((resolve, reject) => {
+      web3.currentProvider.sendAsync({
+        jsonrpc: "2.0",
+        method: "evm_increaseTime",
+        params: [time], // 86400 is num seconds in day
+        id: new Date().getTime()
+      }, (err, result) => {
+        if(err){ return reject(err) }
+        return resolve(result)
+      });
+    })
+  }
+
 contract('GameHub', function (accounts) {
     var gameHubContract;
 
@@ -21,20 +35,14 @@ contract('GameHub', function (accounts) {
     const PAPER = 2;
     const SCISSORS = 3;
 
-    const setBlockchainTime = function (time) {
+    const getGameResultEvent = () => {
         return new Promise((resolve, reject) => {
-          web3.currentProvider.sendAsync({
-            jsonrpc: "2.0",
-            method: "evm_increaseTime",
-            params: [time], // 86400 is num seconds in day
-            id: new Date().getTime()
-          }, (err, result) => {
-            if(err){ return reject(err) }
-            return resolve(result)
-          });
+           var event = gameHubContract.LogGameResult().watch(function(error, result) {
+                event.stopWatching();
+                return resolve(result);
+            })
         })
-      }
-
+    }
 
     beforeEach('setup contract for each test', function () {
         return GameHubContract.new({ from: contractCreator }).then(function (instance) {
@@ -67,7 +75,7 @@ contract('GameHub', function (accounts) {
         assertGameJoined(joinTxObj1, player_one, gameAddress);
         
           // Try to withdraw with incorrect passwords
-          return expectedExceptionPromise(function () {
+        return expectedExceptionPromise(function () {
             return gameHubContract.joinGame(gameAddress, {from: player_one, value: game_cost});
         }). then(function (err)  {
             return gameHubContract.playerBalances(player_one);
@@ -114,6 +122,92 @@ contract('GameHub', function (accounts) {
         // Player2 won so should have the funds for the new game
         var joinGame2TxObj = await joinGame(gameAddress, player_two, 0);
         assertGameJoined(joinGame2TxObj, player_one, gameAddress);
+     });
+
+     it("should allow a player to forfeit a game if they know they have lost without playing a move", async () => {
+        var gameAddress = await setupJoinedGame(game_cost);
+        var rpsGame = RockPaperScissorsContract.at(gameAddress);
+  
+        var player1SecretMove = await rpsGame.createSecretMove(player_one, ROCK, password);
+        await rpsGame.playMove(player1SecretMove,{from:player_one});
+        var player2SecretMove = await rpsGame.createSecretMove(player_two, SCISSORS, password);
+        await rpsGame.playMove(player2SecretMove,{from:player_two});
+
+        await rpsGame.revealMove(ROCK, password, {from:player_one});
+        
+        var txObj = await rpsGame.requestEndGame({from:player_two});
+        var endGameEvent = txObj.logs[0];
+        assert.strictEqual(endGameEvent.args.game, gameAddress);
+        assert.strictEqual(endGameEvent.args.playerEnded, player_two);
+     });
+
+     it("should not allow a player to end the game before the exipiry time if they have already played a move", async () => {
+        var gameAddress = await setupJoinedGame(game_cost);
+        var rpsGame = RockPaperScissorsContract.at(gameAddress);
+  
+        var player1SecretMove = await rpsGame.createSecretMove(player_one, ROCK, password);
+        await rpsGame.playMove(player1SecretMove,{from:player_one});
+
+        return expectedExceptionPromise(function () {
+            return rpsGame.requestEndGame({from:player_one});
+        });
+     });
+
+     it("should allow a player to end the game and win if the other player has not revealed a move after the game expires ", async () => {
+        var gameAddress = await setupJoinedGame(game_cost);
+        var rpsGame = RockPaperScissorsContract.at(gameAddress);
+  
+        var p1Move = ROCK;
+        var p2Move = SCISSORS;
+        var player1SecretMove = await rpsGame.createSecretMove(player_one, p1Move, password);
+        var player2SecretMove = await rpsGame.createSecretMove(player_two, p2Move, password);
+
+        await rpsGame.playMove(player1SecretMove,{from:player_one});
+        await rpsGame.playMove(player2SecretMove,{from:player_two});
+     
+        await rpsGame.revealMove(p1Move, password, {from:player_one});
+
+        // move block time past game expiry
+        var fiveDaysInSeconds = 86400 * 6;
+        await setBlockchainTime(fiveDaysInSeconds) ;
+
+        var txObj = await rpsGame.requestEndGame({from:player_one});
+        var endGameEvent = txObj.logs[0];
+        assert.strictEqual(endGameEvent.args.game, gameAddress);
+        assert.strictEqual(endGameEvent.args.playerEnded, player_one);
+
+        var winnersBalance = await gameHubContract.playerBalances(player_one);
+        assert.strictEqual(Number(winnersBalance    ), (game_cost * 2), "Player1 won - balnce should be above 0");
+     });
+
+     it("should allow a player to end the game and win if the other player has not played a move after the game expires ", async () => {
+        var gameAddress = await setupJoinedGame(game_cost);
+        var rpsGame = RockPaperScissorsContract.at(gameAddress);
+  
+        var p1Move = ROCK;
+        var p2Move = SCISSORS;
+        var player1SecretMove = await rpsGame.createSecretMove(player_one, p1Move, password);
+
+        await rpsGame.playMove(player1SecretMove,{from:player_one});
+
+        // move block time past game expiry
+        var fiveDaysInSeconds = 86400 * 6;
+        await setBlockchainTime(fiveDaysInSeconds) ;
+
+        var txObj = await rpsGame.requestEndGame({from:player_one});
+        var endGameEvent = txObj.logs[0];
+        assert.strictEqual(endGameEvent.args.game, gameAddress);
+        assert.strictEqual(endGameEvent.args.playerEnded, player_one);
+
+        var gameResultEvent = await getGameResultEvent();
+        assert.strictEqual(gameResultEvent.args.gameAddress, gameAddress);
+        assert.strictEqual(gameResultEvent.args.playerOne, player_one);
+        assert.strictEqual(gameResultEvent.args.playerTwo, player_two);
+        assert.strictEqual(Number(gameResultEvent.args.result), 1);
+        assert.equal(gameResultEvent.args.winningAmount, game_cost * 2);
+
+        var winnersBalance = await gameHubContract.playerBalances(player_one);
+        assert.strictEqual(Number(winnersBalance    ), (game_cost * 2), "Player1 won - balnce should be above 0");
      });
 
     async function createGame(cost) {

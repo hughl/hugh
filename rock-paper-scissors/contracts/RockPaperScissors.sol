@@ -6,7 +6,7 @@ contract RockPaperScissors {
     
     event LogPlayerMove(address indexed game, address player, bytes32 secretMove);
     event LogRevealMove(address indexed game, address player, uint move);
-    event LogEndGame(address indexed game, address playerEnded);
+    event LogRequestEndGame(address indexed game, address playerEnded);
 
     enum Move { None, Rock, Paper, Scissors}
     
@@ -71,52 +71,64 @@ contract RockPaperScissors {
 
     function revealMove(uint8 move, bytes32 password) public returns (bool) {
         // check each player has played their move before revealing
-        for (uint i = 0; i < players.length; i++) {
-            require(players[i].secretMove > 0);
-        }
+        require(players[0].secretMove > 0);
+        require(players[1].secretMove > 0);
 
         Player storage playerStruct = players[getPlayerIndex(msg.sender)];
-
         bytes32 secretMove = createSecretMove(msg.sender, move, password);
         require(secretMove == playerStruct.secretMove);
         playerStruct.revealedMove = Move(move);
-        
-        Player storage playerOne = players[0];
-        Player storage playerTwo = players[1];
 
-        // If both moves are revealed give balance to winner.  
-        if (playerOne.revealedMove != Move.None && playerTwo.revealedMove != Move.None) {
-            GameHub gHub = GameHub(gameHub);
-            uint result = (3 + uint(playerOne.revealedMove) - uint(playerTwo.revealedMove)) % 3;
-            if (result == 1) {
-                gHub.gameResult(this, playerOne.account, playerTwo.account, GameHub.GameResult.PlayerOneWin, cost);
-            } else if (result == 2) {
-                gHub.gameResult(this, playerOne.account, playerTwo.account, GameHub.GameResult.PlayerTwoWin, cost);
-            } else if (result == 0) {
-                gHub.gameResult(this, playerOne.account, playerTwo.account, GameHub.GameResult.Tied, cost);
-            }
+        if (players[0].revealedMove != Move.None && players[1].revealedMove != Move.None) {
+            sendGameResultToHub(players[0], players[1]);
         }
         LogRevealMove(this, msg.sender, uint(playerStruct.revealedMove));
         return true;
     }
 
-    // can request endgame if it has expired with a player not having played a move
-    function requestEndGame() public  {
-    
-        // todo allow the non revealed 
-        require(now >= expiryTime);
-        Player storage player1Struct = players[0];
-        Player storage player2Struct = players[1];
-        require(msg.sender == player1Struct.account || msg.sender == player2Struct.account);
-
-        // the game is over if both players have revealed moves
-        require (uint(player1Struct.revealedMove) == 0 || uint(player2Struct.revealedMove) == 0);
+    function sendGameResultToHub(Player playerOne, Player playerTwo) private {
         GameHub gHub = GameHub(gameHub);
-        if (uint(player1Struct.revealedMove) == 0) {
-            gHub.gameResult(this, player1Struct.account, player2Struct.account, GameHub.GameResult.PlayerTwoWin, cost);
-        } else {
-            gHub.gameResult(this, player1Struct.account, player2Struct.account, GameHub.GameResult.PlayerOneWin, cost);
+        uint result = (3 + uint(playerOne.revealedMove) - uint(playerTwo.revealedMove)) % 3;
+        if (result == 1) {
+            gHub.gameResult(this, playerOne.account, playerTwo.account, GameHub.GameResult.PlayerOneWin, cost);
+        } else if (result == 2) {
+            gHub.gameResult(this, playerOne.account, playerTwo.account, GameHub.GameResult.PlayerTwoWin, cost);
+        } else if (result == 0) {
+            gHub.gameResult(this, playerOne.account, playerTwo.account, GameHub.GameResult.Tied, cost);
         }
-        LogEndGame(this, msg.sender);
+    }
+
+    // can request endgame if it has expired with a player not having played a move
+    function requestEndGame() public  {    
+        require(msg.sender == players[0].account || msg.sender == players[1].account);
+        bool expired = now >= expiryTime;
+        uint playerEndingIndex = getPlayerIndex(msg.sender);
+        uint otherPlayerIndex = playerEndingIndex == 0 ? 1 : 0;
+        Player storage playerEnding = players[playerEndingIndex];
+        Player storage otherPlayer = players[otherPlayerIndex];
+        GameHub gHub = GameHub(gameHub);
+        
+         // If playerEnding has not revealed their move but other has, forfeit the game
+        if (playerEnding.revealedMove == Move.None && uint(otherPlayer.revealedMove) > 0) {
+            GameHub.GameResult result = playerEndingIndex == 0 ? GameHub.GameResult.PlayerTwoWin : GameHub.GameResult.PlayerOneWin;
+            gHub.gameResult(this, players[0].account, players[1].account, result, cost);    
+        }
+        // Tie game if no one has made a move regardless of expiry time
+        else if (playerEnding.secretMove == 0 && otherPlayer.secretMove == 0) {
+            gHub.gameResult(this, players[0].account, players[1].account, GameHub.GameResult.Tied, cost);
+        }
+        else if(expired) {
+            // if either player has not played a move and the other other has, the other wins
+            if (players[0].secretMove > 0 && players[1].secretMove == 0 || players[0].revealedMove != Move.None && players[1].revealedMove == Move.None) {
+                gHub.gameResult(this, players[0].account, players[1].account, GameHub.GameResult.PlayerOneWin, cost);    
+            } else {
+                gHub.gameResult(this, players[0].account, players[1].account, GameHub.GameResult.PlayerTwoWin, cost);    
+            }
+        } else {    
+            // revert if other conditions not met
+            revert();    
+        }
+
+        LogRequestEndGame(this, msg.sender);
     }
 }
